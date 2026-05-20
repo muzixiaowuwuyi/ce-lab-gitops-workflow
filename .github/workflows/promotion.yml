@@ -1,0 +1,83 @@
+name: Promotion Check
+
+on:
+  pull_request:
+    branches:
+      - main # NOTE: This workflow triggers only when the target branch of the PR is 'main'
+
+permissions:
+  contents: read # Permission to read the code
+  pull-requests: write # CRITICAL: Grants the workflow permission to post comments on the PR page
+
+env:
+  TF_VERSION: "1.6.0"
+
+jobs:
+  plan-prod:
+    name: Plan Production Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        # NOTE: We strictly lock the key to 'prod' here because this calculates the simulation for the production environment.
+        run: |
+          terraform init \
+            -backend-config="key=m5-03-gitops/prod/terraform.tfstate"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive # Checks if code formatting is elegant; fails if non-compliant
+
+      - name: Terraform Validate
+        run: terraform validate -no-color # Checks for syntax errors
+
+      - name: Terraform Plan
+        id: plan # Assigned an ID to easily reference this step's output in subsequent steps
+        # Uses the prod variable file for the preview calculation
+        run: |
+          terraform plan \
+            -var-file=environments/prod/terraform.tfvars \
+            -input=false \
+            -no-color
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Post Plan to PR
+        uses: actions/github-script@v7 # Official script runner to control GitHub via JavaScript
+        with:
+          script: |
+            // 1. Get the standard output (stdout) of the Terraform Plan step above
+            const plan = `${{ steps.plan.outputs.stdout }}`;
+
+            // 2. If the plan log is too long (over 60k characters), truncate it to fit within GitHub's comment limits
+            const truncated = plan.length > 60000
+              ? plan.substring(0, 60000) + "\n\n... (truncated)"
+              : plan;
+
+            // 3. Assemble the Markdown formatted comment body
+            const body = `### 🚀 Production Deployment Plan Preview
+            > 💡 This preview shows the actual infrastructure changes that will occur in the **Prod Environment** when this PR is merged into the main branch.
+
+            \`\`\`hcl
+            ${truncated}
+            \`\`\`
+            *Promotion pipeline triggered by: @${{ github.actor }}*`;
+
+            // 4. Call the GitHub API to post the comment directly to the PR thread
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
