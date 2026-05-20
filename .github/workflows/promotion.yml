@@ -10,7 +10,7 @@ permissions:
   pull-requests: write # CRITICAL: Grants the workflow permission to post comments on the PR page
 
 env:
-  TF_VERSION: "1.6.0"
+  TF_VERSION: latest # Using the latest version of Terraform for the plan step
 
 jobs:
   plan-prod:
